@@ -1,0 +1,27 @@
+# Python build artifacts
+dist/
+build/
+*.egg-info/
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+
+

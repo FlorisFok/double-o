@@ -19,3 +19,8 @@ class ProxyError(DoubleOError):
 class AuthenticationError(DoubleOError):
     """Exception raised when authentication fails."""
     pass
+
+
+class EnvError(DoubleOError):
+    """Exception raised when fetching environment variables fails."""
+    pass

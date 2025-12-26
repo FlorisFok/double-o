@@ -1,15 +1,18 @@
-"""Double-O client module for secret fetching and proxy API calls."""
+"""Async Double-O client module for non-blocking secret fetching and proxy API calls."""
 
+import asyncio
 import json
 import os
 import random
 import time
-from threading import Lock
-from typing import Any, Callable, Dict, Optional, TypeVar, Union
-
-import requests
+from typing import Any, Callable, Coroutine, Dict, Optional, TypeVar
 
 from .exceptions import AuthenticationError, EnvError, ProxyError, SecretError
+
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None  # type: ignore
 
 
 BASE_URL = "https://double-o-539191849800.europe-west1.run.app"
@@ -17,19 +20,25 @@ BASE_URL = "https://double-o-539191849800.europe-west1.run.app"
 T = TypeVar("T")
 
 
-class SecretCache:
+class AsyncSecretCache:
     """
-    Thread-safe cache for secrets with TTL (time-to-live) support.
+    Async-safe cache for secrets with TTL (time-to-live) support.
     
     This cache stores secrets locally to reduce API calls. Each cached entry
-    expires after the specified TTL.
+    expires after the specified TTL. Uses asyncio.Lock for thread safety.
     """
     
     def __init__(self) -> None:
         self._cache: Dict[str, tuple[str, float]] = {}  # (value, expiry_time)
-        self._lock = Lock()
+        self._lock: Optional[asyncio.Lock] = None
     
-    def get(self, key: str) -> Optional[str]:
+    def _get_lock(self) -> asyncio.Lock:
+        """Lazily create lock in the current event loop."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+    
+    async def get(self, key: str) -> Optional[str]:
         """
         Get a cached secret if it exists and hasn't expired.
         
@@ -39,7 +48,7 @@ class SecretCache:
         Returns:
             The cached secret value, or None if not found or expired.
         """
-        with self._lock:
+        async with self._get_lock():
             if key in self._cache:
                 value, expiry_time = self._cache[key]
                 if time.time() < expiry_time:
@@ -48,7 +57,7 @@ class SecretCache:
                 del self._cache[key]
             return None
     
-    def set(self, key: str, value: str, ttl: float) -> None:
+    async def set(self, key: str, value: str, ttl: float) -> None:
         """
         Cache a secret with a TTL.
         
@@ -57,41 +66,41 @@ class SecretCache:
             value: The secret value to cache.
             ttl: Time-to-live in seconds.
         """
-        with self._lock:
+        async with self._get_lock():
             expiry_time = time.time() + ttl
             self._cache[key] = (value, expiry_time)
     
-    def invalidate(self, key: str) -> None:
+    async def invalidate(self, key: str) -> None:
         """
         Remove a specific key from the cache.
         
         Args:
             key: The cache key to remove.
         """
-        with self._lock:
+        async with self._get_lock():
             self._cache.pop(key, None)
     
-    def clear(self) -> None:
+    async def clear(self) -> None:
         """Clear all cached secrets."""
-        with self._lock:
+        async with self._get_lock():
             self._cache.clear()
 
 
-# Global cache instance
-_secret_cache = SecretCache()
+# Global async cache instance
+_async_secret_cache = AsyncSecretCache()
 
 
-def _retry_with_backoff(
-    func: Callable[[], T],
+async def _async_retry_with_backoff(
+    func: Callable[[], Coroutine[Any, Any, T]],
     retries: int = 3,
     backoff_factor: float = 0.5,
-    retryable_exceptions: tuple = (requests.exceptions.RequestException,),
+    retryable_exceptions: tuple = (),
 ) -> T:
     """
-    Execute a function with retry logic and exponential backoff.
+    Execute an async function with retry logic and exponential backoff.
     
     Args:
-        func: The function to execute.
+        func: The async function to execute.
         retries: Maximum number of retry attempts (default: 3).
         backoff_factor: Multiplier for exponential backoff (default: 0.5).
         retryable_exceptions: Tuple of exception types to retry on.
@@ -106,20 +115,23 @@ def _retry_with_backoff(
     
     for attempt in range(retries + 1):
         try:
-            return func()
+            return await func()
         except retryable_exceptions as e:
             last_exception = e
             if attempt < retries:
                 # Exponential backoff with jitter
                 sleep_time = backoff_factor * (2 ** attempt) + random.uniform(0, 0.1)
-                time.sleep(sleep_time)
+                await asyncio.sleep(sleep_time)
     
     raise last_exception  # type: ignore
 
 
-class Client:
+class AsyncClient:
     """
-    Double-O Client for interacting with secret management and proxy services.
+    Async Double-O Client for non-blocking secret management and proxy services.
+    
+    This client uses aiohttp for async HTTP requests, making it ideal for
+    FastAPI, asyncio-based applications, and high-concurrency scenarios.
     
     Args:
         base_url: Base URL for the API server (default: BASE_URL)
@@ -128,16 +140,25 @@ class Client:
         backoff_factor: Multiplier for exponential backoff between retries (default: 0.5)
     
     Example:
-        >>> # Basic usage
-        >>> client = Client()
-        >>> secret = client.get_secret("TOKEN")
+        >>> import asyncio
+        >>> from oo import AsyncClient
+        >>> 
+        >>> async def main():
+        ...     async with AsyncClient() as client:
+        ...         secret = await client.get_secret("TOKEN")
+        ...         print(secret)
+        >>> 
+        >>> asyncio.run(main())
         
         >>> # With retry logic
-        >>> client = Client(retries=3, backoff_factor=0.5)
-        >>> secret = client.get_secret("TOKEN")  # Will retry up to 3 times
+        >>> async with AsyncClient(retries=3, backoff_factor=0.5) as client:
+        ...     secret = await client.get_secret("TOKEN")
         
         >>> # With caching
-        >>> secret = client.get_secret("TOKEN", cache_ttl=300)  # Cache for 5 minutes
+        >>> secret = await client.get_secret("TOKEN", cache_ttl=300)  # Cache for 5 minutes
+    
+    Note:
+        Requires the 'async' extra: pip install double-o[async]
     """
     
     def __init__(
@@ -147,32 +168,48 @@ class Client:
         retries: int = 0,
         backoff_factor: float = 0.5,
     ):
+        if aiohttp is None:
+            raise ImportError(
+                "aiohttp is required for AsyncClient. "
+                "Install it with: pip install double-o[async]"
+            )
+        
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.retries = retries
         self.backoff_factor = backoff_factor
-        self._session = requests.Session()
-        self._cache = _secret_cache
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._cache = _async_secret_cache
     
-    def _request_with_retry(
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Get or create the aiohttp session."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=self.timeout)
+        return self._session
+    
+    async def _request_with_retry(
         self,
         method: str,
         url: str,
         **kwargs
-    ) -> requests.Response:
+    ) -> aiohttp.ClientResponse:
         """Make a request with optional retry logic."""
-        def do_request() -> requests.Response:
-            return self._session.request(method, url, **kwargs)
+        session = await self._get_session()
+        
+        async def do_request() -> aiohttp.ClientResponse:
+            response = await session.request(method, url, **kwargs)
+            return response
         
         if self.retries > 0:
-            return _retry_with_backoff(
+            return await _async_retry_with_backoff(
                 do_request,
                 retries=self.retries,
                 backoff_factor=self.backoff_factor,
+                retryable_exceptions=(aiohttp.ClientError, asyncio.TimeoutError),
             )
-        return do_request()
+        return await do_request()
     
-    def get_secret(self, token: str, cache_ttl: Optional[float] = None) -> str:
+    async def get_secret(self, token: str, cache_ttl: Optional[float] = None) -> str:
         """
         Fetch a secret value using a token.
         
@@ -190,36 +227,39 @@ class Client:
             AuthenticationError: If the token is invalid.
             
         Example:
-            >>> client = Client()
-            >>> # No caching
-            >>> secret = client.get_secret("TOKEN")
-            >>> 
-            >>> # Cache for 5 minutes (300 seconds)
-            >>> secret = client.get_secret("TOKEN", cache_ttl=300)
+            >>> async with AsyncClient() as client:
+            ...     # No caching
+            ...     secret = await client.get_secret("TOKEN")
+            ...     
+            ...     # Cache for 5 minutes (300 seconds)
+            ...     secret = await client.get_secret("TOKEN", cache_ttl=300)
         """
         # Check cache first
         if cache_ttl is not None:
-            cached_value = self._cache.get(token)
+            cached_value = await self._cache.get(token)
             if cached_value is not None:
                 return cached_value
         
         url = f"{self.base_url}/api/secret"
         
         try:
-            response = self._request_with_retry(
+            response = await self._request_with_retry(
                 "GET",
                 url,
                 params={"token": token},
-                timeout=self.timeout
             )
+            
+            if response.status == 401:
+                raise AuthenticationError("Invalid token")
+            
             response.raise_for_status()
-            data = response.json()
+            data = await response.json()
             
             if "value" in data:
                 value = data["value"]
                 # Cache the value if TTL is specified
                 if cache_ttl is not None:
-                    self._cache.set(token, value, cache_ttl)
+                    await self._cache.set(token, value, cache_ttl)
                 return value
             elif "error" in data:
                 error_msg = data["error"]
@@ -229,14 +269,14 @@ class Client:
             else:
                 raise SecretError("Unknown error: no value returned")
                 
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
+        except aiohttp.ClientResponseError as e:
+            if e.status == 401:
                 raise AuthenticationError("Invalid token") from e
             raise SecretError(f"HTTP error: {e}") from e
-        except requests.exceptions.RequestException as e:
+        except aiohttp.ClientError as e:
             raise SecretError(f"Request failed: {e}") from e
     
-    def invalidate_cache(self, token: Optional[str] = None) -> None:
+    async def invalidate_cache(self, token: Optional[str] = None) -> None:
         """
         Invalidate cached secrets.
         
@@ -245,11 +285,11 @@ class Client:
                    If None, clear the entire cache.
         """
         if token is not None:
-            self._cache.invalidate(token)
+            await self._cache.invalidate(token)
         else:
-            self._cache.clear()
+            await self._cache.clear()
     
-    def proxy(
+    async def proxy(
         self,
         path: str,
         token: str,
@@ -284,24 +324,27 @@ class Client:
             request_headers.update(headers)
         
         try:
-            response = self._request_with_retry(
+            response = await self._request_with_retry(
                 method.upper(),
                 url,
                 headers=request_headers,
                 data=json.dumps(payload) if payload else None,
-                timeout=self.timeout
             )
-            response.raise_for_status()
-            return response.json()
             
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
+            if response.status == 401:
+                raise AuthenticationError("Invalid proxy token")
+            
+            response.raise_for_status()
+            return await response.json()
+            
+        except aiohttp.ClientResponseError as e:
+            if e.status == 401:
                 raise AuthenticationError("Invalid proxy token") from e
             raise ProxyError(f"Proxy request failed: {e}") from e
-        except requests.exceptions.RequestException as e:
+        except aiohttp.ClientError as e:
             raise ProxyError(f"Request failed: {e}") from e
     
-    def chat_completion(
+    async def chat_completion(
         self,
         token: str,
         messages: list,
@@ -325,9 +368,13 @@ class Client:
             "messages": messages,
             **kwargs
         }
-        return self.proxy("v1/chat/completions", token, payload=payload)
+        return await self.proxy("v1/chat/completions", token, payload=payload)
     
-    def get_env(self, token: str, cache_ttl: Optional[float] = None) -> Dict[str, str]:
+    async def get_env(
+        self,
+        token: str,
+        cache_ttl: Optional[float] = None
+    ) -> Dict[str, str]:
         """
         Fetch environment variables/secrets using a virtual env token.
         
@@ -346,26 +393,29 @@ class Client:
         cache_key = f"env:{token}"
         
         if cache_ttl is not None:
-            cached_value = self._cache.get(cache_key)
+            cached_value = await self._cache.get(cache_key)
             if cached_value is not None:
                 return json.loads(cached_value)
         
         url = f"{self.base_url}/api/env"
         
         try:
-            response = self._request_with_retry(
+            response = await self._request_with_retry(
                 "GET",
                 url,
                 params={"token": token},
-                timeout=self.timeout
             )
+            
+            if response.status == 401:
+                raise AuthenticationError("Invalid token")
+            
             response.raise_for_status()
-            data = response.json()
+            data = await response.json()
             
             if "secrets" in data:
                 secrets = data["secrets"]
                 if cache_ttl is not None:
-                    self._cache.set(cache_key, json.dumps(secrets), cache_ttl)
+                    await self._cache.set(cache_key, json.dumps(secrets), cache_ttl)
                 return secrets
             elif "error" in data:
                 error_msg = data["error"]
@@ -375,14 +425,18 @@ class Client:
             else:
                 raise EnvError("Unknown error: no secrets returned")
                 
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
+        except aiohttp.ClientResponseError as e:
+            if e.status == 401:
                 raise AuthenticationError("Invalid token") from e
             raise EnvError(f"HTTP error: {e}") from e
-        except requests.exceptions.RequestException as e:
+        except aiohttp.ClientError as e:
             raise EnvError(f"Request failed: {e}") from e
     
-    def load_env(self, token: str, cache_ttl: Optional[float] = None) -> Dict[str, str]:
+    async def load_env(
+        self,
+        token: str,
+        cache_ttl: Optional[float] = None
+    ) -> Dict[str, str]:
         """
         Fetch environment variables and set them in os.environ.
         
@@ -397,202 +451,19 @@ class Client:
             EnvError: If the environment variables cannot be retrieved.
             AuthenticationError: If the token is invalid.
         """
-        secrets = self.get_env(token, cache_ttl=cache_ttl)
+        secrets = await self.get_env(token, cache_ttl=cache_ttl)
         for key, value in secrets.items():
             os.environ[key] = value
         return secrets
     
-    def close(self):
-        """Close the underlying session."""
-        self._session.close()
+    async def close(self) -> None:
+        """Close the underlying aiohttp session."""
+        if self._session and not self._session.closed:
+            await self._session.close()
     
-    def __enter__(self):
+    async def __aenter__(self):
         return self
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
 
-
-# Default client instance for simple usage
-_default_client: Optional[Client] = None
-
-
-def _get_default_client(
-    base_url: str = BASE_URL,
-    retries: int = 0,
-    backoff_factor: float = 0.5,
-) -> Client:
-    """Get or create the default client instance."""
-    global _default_client
-    if _default_client is None:
-        _default_client = Client(
-            base_url=base_url,
-            retries=retries,
-            backoff_factor=backoff_factor,
-        )
-    return _default_client
-
-
-def get_secret(
-    token: str,
-    base_url: str = BASE_URL,
-    cache_ttl: Optional[float] = None,
-) -> str:
-    """
-    Fetch a secret value using a token.
-    
-    This is a convenience function that uses a default client instance.
-    
-    Args:
-        token: The authentication token for fetching the secret.
-        base_url: Base URL for the API server (default: BASE_URL)
-        cache_ttl: Optional TTL in seconds to cache the secret locally.
-        
-    Returns:
-        The secret value as a string.
-        
-    Example:
-        >>> import oo
-        >>> secret = oo.get_secret("YOUR_TOKEN_HERE")
-        >>> 
-        >>> # With caching (5 minutes)
-        >>> secret = oo.get_secret("YOUR_TOKEN_HERE", cache_ttl=300)
-    """
-    client = _get_default_client(base_url)
-    return client.get_secret(token, cache_ttl=cache_ttl)
-
-
-def proxy(
-    path: str,
-    token: str,
-    method: str = "POST",
-    payload: Optional[Dict[str, Any]] = None,
-    headers: Optional[Dict[str, str]] = None,
-    base_url: str = BASE_URL
-) -> Dict[str, Any]:
-    """
-    Make an API call through the proxy.
-    
-    This is a convenience function that uses a default client instance.
-    
-    Args:
-        path: The API path to call (e.g., 'v1/chat/completions').
-        token: The proxy authentication token.
-        method: HTTP method (default: POST).
-        payload: Request payload as a dictionary (optional).
-        headers: Additional headers to include (optional).
-        base_url: Base URL for the API server (default: BASE_URL)
-        
-    Returns:
-        The JSON response as a dictionary.
-        
-    Example:
-        >>> import oo
-        >>> result = oo.proxy(
-        ...     "v1/chat/completions",
-        ...     token="YOUR_TOKEN",
-        ...     payload={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello!"}]}
-        ... )
-    """
-    client = _get_default_client(base_url)
-    return client.proxy(path, token, method, payload, headers)
-
-
-def chat(
-    token: str,
-    messages: list,
-    model: str = "gpt-4o-mini",
-    base_url: str = BASE_URL,
-    **kwargs
-) -> Dict[str, Any]:
-    """
-    Convenience function for OpenAI chat completions through the proxy.
-    
-    Args:
-        token: The proxy authentication token.
-        messages: List of message dictionaries with 'role' and 'content'.
-        model: The model to use (default: gpt-4o-mini).
-        base_url: Base URL for the API server (default: BASE_URL)
-        **kwargs: Additional parameters to pass to the API.
-        
-    Returns:
-        The chat completion response.
-        
-    Example:
-        >>> import oo
-        >>> result = oo.chat(
-        ...     token="YOUR_TOKEN",
-        ...     messages=[{"role": "user", "content": "Hello!"}]
-        ... )
-        >>> print(result)
-    """
-    client = _get_default_client(base_url)
-    return client.chat_completion(token, messages, model, **kwargs)
-
-
-def get_env(
-    token: str,
-    base_url: str = BASE_URL,
-    cache_ttl: Optional[float] = None,
-) -> Dict[str, str]:
-    """
-    Fetch environment variables/secrets using a virtual env token.
-    
-    This is a convenience function that uses a default client instance.
-    
-    Args:
-        token: The virtual environment token.
-        base_url: Base URL for the API server (default: BASE_URL)
-        cache_ttl: Optional TTL in seconds to cache the environment.
-        
-    Returns:
-        A dictionary of environment variable names to their values.
-        
-    Example:
-        >>> import oo
-        >>> env = oo.get_env("YOUR_VIRTUAL_ENV_TOKEN")
-        >>> print(env)
-        {"OPENAI_API_KEY": "sk-xxx", "DB_URL": "..."}
-    """
-    client = _get_default_client(base_url)
-    return client.get_env(token, cache_ttl=cache_ttl)
-
-
-def load_env(
-    token: str,
-    base_url: str = BASE_URL,
-    cache_ttl: Optional[float] = None,
-) -> Dict[str, str]:
-    """
-    Fetch environment variables and set them in os.environ.
-    
-    This is a convenience function that uses a default client instance.
-    
-    Args:
-        token: The virtual environment token.
-        base_url: Base URL for the API server (default: BASE_URL)
-        cache_ttl: Optional TTL in seconds to cache the environment.
-        
-    Returns:
-        A dictionary of environment variable names to their values.
-        
-    Example:
-        >>> import oo
-        >>> oo.load_env("YOUR_VIRTUAL_ENV_TOKEN")
-        >>> import os
-        >>> print(os.environ["OPENAI_API_KEY"])
-        sk-xxx
-    """
-    client = _get_default_client(base_url)
-    return client.load_env(token, cache_ttl=cache_ttl)
-
-
-def invalidate_cache(token: Optional[str] = None) -> None:
-    """
-    Invalidate cached secrets.
-    
-    Args:
-        token: If provided, only invalidate the cache for this token.
-               If None, clear the entire cache.
-    """
-    _secret_cache.invalidate(token) if token else _secret_cache.clear()

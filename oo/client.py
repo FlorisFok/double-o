@@ -8,18 +8,20 @@ import requests
 from .exceptions import AuthenticationError, ProxyError, SecretError
 
 
+BASE_URL = "https://double-o-539191849800.europe-west1.run.app"
+
 class Client:
     """
     Double-O Client for interacting with secret management and proxy services.
     
     Args:
-        base_url: Base URL for the API server (default: http://localhost:3001)
+        base_url: Base URL for the API server (default: BASE_URL)
         timeout: Request timeout in seconds (default: 30)
     """
     
     def __init__(
         self,
-        base_url: str = "http://localhost:3001",
+        base_url: str = BASE_URL,
         timeout: int = 30
     ):
         self.base_url = base_url.rstrip("/")
@@ -161,7 +163,7 @@ class Client:
 _default_client: Optional[Client] = None
 
 
-def _get_default_client(base_url: str = "http://localhost:3001") -> Client:
+def _get_default_client(base_url: str = BASE_URL) -> Client:
     """Get or create the default client instance."""
     global _default_client
     if _default_client is None:
@@ -169,7 +171,7 @@ def _get_default_client(base_url: str = "http://localhost:3001") -> Client:
     return _default_client
 
 
-def get_secret(token: str, base_url: str = "http://localhost:3001") -> str:
+def get_secret(token: str, base_url: str = BASE_URL) -> str:
     """
     Fetch a secret value using a token.
     
@@ -177,7 +179,7 @@ def get_secret(token: str, base_url: str = "http://localhost:3001") -> str:
     
     Args:
         token: The authentication token for fetching the secret.
-        base_url: Base URL for the API server (default: http://localhost:3001)
+        base_url: Base URL for the API server (default: BASE_URL)
         
     Returns:
         The secret value as a string.
@@ -197,7 +199,7 @@ def proxy(
     method: str = "POST",
     payload: Optional[Dict[str, Any]] = None,
     headers: Optional[Dict[str, str]] = None,
-    base_url: str = "http://localhost:3001"
+    base_url: str = BASE_URL
 ) -> Dict[str, Any]:
     """
     Make an API call through the proxy.
@@ -210,7 +212,7 @@ def proxy(
         method: HTTP method (default: POST).
         payload: Request payload as a dictionary (optional).
         headers: Additional headers to include (optional).
-        base_url: Base URL for the API server (default: http://localhost:3001)
+        base_url: Base URL for the API server (default: BASE_URL)
         
     Returns:
         The JSON response as a dictionary.
@@ -231,7 +233,7 @@ def chat(
     token: str,
     messages: list,
     model: str = "gpt-4o-mini",
-    base_url: str = "http://localhost:3001",
+    base_url: str = BASE_URL,
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -241,7 +243,7 @@ def chat(
         token: The proxy authentication token.
         messages: List of message dictionaries with 'role' and 'content'.
         model: The model to use (default: gpt-4o-mini).
-        base_url: Base URL for the API server (default: http://localhost:3001)
+        base_url: Base URL for the API server (default: BASE_URL)
         **kwargs: Additional parameters to pass to the API.
         
     Returns:

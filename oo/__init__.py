@@ -41,6 +41,10 @@ from .client import (
     get_env,
     load_env,
     invalidate_cache,
+    export_env,
+    embed,
+    image,
+    health,
 )
 from .exceptions import (
     DoubleOError,
@@ -72,6 +76,10 @@ __all__ = [
     "chat",
     "get_env",
     "load_env",
+    "export_env",
+    "embed",
+    "image",
+    "health",
     # Exceptions
     "DoubleOError",
     "SecretError",

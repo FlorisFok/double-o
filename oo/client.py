@@ -209,7 +209,7 @@ class Client:
             response = self._request_with_retry(
                 "GET",
                 url,
-                params={"token": token},
+                headers={"Authorization": f"Bearer {token}"},
                 timeout=self.timeout
             )
             response.raise_for_status()
@@ -356,7 +356,7 @@ class Client:
             response = self._request_with_retry(
                 "GET",
                 url,
-                params={"token": token},
+                headers={"Authorization": f"Bearer {token}"},
                 timeout=self.timeout
             )
             response.raise_for_status()
@@ -401,6 +401,143 @@ class Client:
         for key, value in secrets.items():
             os.environ[key] = value
         return secrets
+    
+    def export_env(
+        self,
+        token: str,
+        path: str = ".env",
+        overwrite: bool = True,
+        cache_ttl: Optional[float] = None
+    ) -> Dict[str, str]:
+        """
+        Fetch environment variables and write them to a .env file.
+        
+        Args:
+            token: The virtual environment token.
+            path: Path to the .env file (default: ".env").
+            overwrite: If True, overwrite existing file. If False, append.
+            cache_ttl: Optional TTL in seconds to cache the environment.
+            
+        Returns:
+            A dictionary of environment variable names to their values.
+            
+        Raises:
+            EnvError: If the environment variables cannot be retrieved.
+            AuthenticationError: If the token is invalid.
+            
+        Example:
+            >>> client = Client()
+            >>> client.export_env("TOKEN", path=".env")
+            {"OPENAI_API_KEY": "sk-xxx", "DB_URL": "..."}
+        """
+        secrets = self.get_env(token, cache_ttl=cache_ttl)
+        
+        mode = "w" if overwrite else "a"
+        with open(path, mode) as f:
+            if not overwrite:
+                f.write("\n")  # Add newline before appending
+            for key, value in secrets.items():
+                # Escape special characters in value
+                escaped_value = value.replace("\\", "\\\\").replace('"', '\\"')
+                f.write(f'{key}="{escaped_value}"\n')
+        
+        return secrets
+    
+    def embed(
+        self,
+        token: str,
+        texts: list,
+        model: str = "text-embedding-3-small",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Generate embeddings for the given texts through the proxy.
+        
+        Args:
+            token: The proxy authentication token.
+            texts: List of text strings to generate embeddings for.
+            model: The embedding model to use (default: text-embedding-3-small).
+            **kwargs: Additional parameters to pass to the API.
+            
+        Returns:
+            The embeddings response containing vector representations.
+            
+        Example:
+            >>> client = Client()
+            >>> result = client.embed("TOKEN", texts=["hello", "world"])
+            >>> embeddings = [item["embedding"] for item in result["data"]]
+        """
+        payload = {
+            "model": model,
+            "input": texts,
+            **kwargs
+        }
+        return self.proxy("v1/embeddings", token, payload=payload)
+    
+    def image(
+        self,
+        token: str,
+        prompt: str,
+        model: str = "dall-e-3",
+        n: int = 1,
+        size: str = "1024x1024",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Generate images from a text prompt through the proxy.
+        
+        Args:
+            token: The proxy authentication token.
+            prompt: Text description of the desired image.
+            model: The image generation model (default: dall-e-3).
+            n: Number of images to generate (default: 1).
+            size: Image size (default: 1024x1024).
+            **kwargs: Additional parameters to pass to the API.
+            
+        Returns:
+            The image generation response containing URLs or base64 data.
+            
+        Example:
+            >>> client = Client()
+            >>> result = client.image("TOKEN", prompt="A cat on the moon")
+            >>> image_url = result["data"][0]["url"]
+        """
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "n": n,
+            "size": size,
+            **kwargs
+        }
+        return self.proxy("v1/images/generations", token, payload=payload)
+    
+    def health(self) -> bool:
+        """
+        Check if the Double-O service is available.
+        
+        Returns:
+            True if the service is healthy and reachable.
+            
+        Raises:
+            ProxyError: If the service is unreachable or unhealthy.
+            
+        Example:
+            >>> client = Client()
+            >>> if client.health():
+            ...     print("Service is up!")
+        """
+        url = f"{self.base_url}/health"
+        
+        try:
+            response = self._request_with_retry(
+                "GET",
+                url,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return True
+        except requests.exceptions.RequestException as e:
+            raise ProxyError(f"Health check failed: {e}") from e
     
     def close(self):
         """Close the underlying session."""
@@ -596,3 +733,124 @@ def invalidate_cache(token: Optional[str] = None) -> None:
                If None, clear the entire cache.
     """
     _secret_cache.invalidate(token) if token else _secret_cache.clear()
+
+
+def export_env(
+    token: str,
+    path: str = ".env",
+    overwrite: bool = True,
+    base_url: str = BASE_URL,
+    cache_ttl: Optional[float] = None,
+) -> Dict[str, str]:
+    """
+    Fetch environment variables and write them to a .env file.
+    
+    This is a convenience function that uses a default client instance.
+    
+    Args:
+        token: The virtual environment token.
+        path: Path to the .env file (default: ".env").
+        overwrite: If True, overwrite existing file. If False, append.
+        base_url: Base URL for the API server (default: BASE_URL)
+        cache_ttl: Optional TTL in seconds to cache the environment.
+        
+    Returns:
+        A dictionary of environment variable names to their values.
+        
+    Example:
+        >>> import oo
+        >>> oo.export_env("TOKEN", path=".env")
+        {"OPENAI_API_KEY": "sk-xxx", "DB_URL": "..."}
+    """
+    client = _get_default_client(base_url)
+    return client.export_env(token, path=path, overwrite=overwrite, cache_ttl=cache_ttl)
+
+
+def embed(
+    token: str,
+    texts: list,
+    model: str = "text-embedding-3-small",
+    base_url: str = BASE_URL,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Generate embeddings for the given texts through the proxy.
+    
+    This is a convenience function that uses a default client instance.
+    
+    Args:
+        token: The proxy authentication token.
+        texts: List of text strings to generate embeddings for.
+        model: The embedding model to use (default: text-embedding-3-small).
+        base_url: Base URL for the API server (default: BASE_URL)
+        **kwargs: Additional parameters to pass to the API.
+        
+    Returns:
+        The embeddings response containing vector representations.
+        
+    Example:
+        >>> import oo
+        >>> result = oo.embed("TOKEN", texts=["hello", "world"])
+        >>> embeddings = [item["embedding"] for item in result["data"]]
+    """
+    client = _get_default_client(base_url)
+    return client.embed(token, texts, model, **kwargs)
+
+
+def image(
+    token: str,
+    prompt: str,
+    model: str = "dall-e-3",
+    n: int = 1,
+    size: str = "1024x1024",
+    base_url: str = BASE_URL,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Generate images from a text prompt through the proxy.
+    
+    This is a convenience function that uses a default client instance.
+    
+    Args:
+        token: The proxy authentication token.
+        prompt: Text description of the desired image.
+        model: The image generation model (default: dall-e-3).
+        n: Number of images to generate (default: 1).
+        size: Image size (default: 1024x1024).
+        base_url: Base URL for the API server (default: BASE_URL)
+        **kwargs: Additional parameters to pass to the API.
+        
+    Returns:
+        The image generation response containing URLs or base64 data.
+        
+    Example:
+        >>> import oo
+        >>> result = oo.image("TOKEN", prompt="A cat on the moon")
+        >>> image_url = result["data"][0]["url"]
+    """
+    client = _get_default_client(base_url)
+    return client.image(token, prompt, model, n, size, **kwargs)
+
+
+def health(base_url: str = BASE_URL) -> bool:
+    """
+    Check if the Double-O service is available.
+    
+    This is a convenience function that uses a default client instance.
+    
+    Args:
+        base_url: Base URL for the API server (default: BASE_URL)
+        
+    Returns:
+        True if the service is healthy and reachable.
+        
+    Raises:
+        ProxyError: If the service is unreachable or unhealthy.
+        
+    Example:
+        >>> import oo
+        >>> if oo.health():
+        ...     print("Service is up!")
+    """
+    client = _get_default_client(base_url)
+    return client.health()

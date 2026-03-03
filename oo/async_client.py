@@ -246,7 +246,7 @@ class AsyncClient:
             response = await self._request_with_retry(
                 "GET",
                 url,
-                params={"token": token},
+                headers={"Authorization": f"Bearer {token}"},
             )
             
             if response.status == 401:
@@ -403,7 +403,7 @@ class AsyncClient:
             response = await self._request_with_retry(
                 "GET",
                 url,
-                params={"token": token},
+                headers={"Authorization": f"Bearer {token}"},
             )
             
             if response.status == 401:
@@ -455,6 +455,141 @@ class AsyncClient:
         for key, value in secrets.items():
             os.environ[key] = value
         return secrets
+    
+    async def export_env(
+        self,
+        token: str,
+        path: str = ".env",
+        overwrite: bool = True,
+        cache_ttl: Optional[float] = None
+    ) -> Dict[str, str]:
+        """
+        Fetch environment variables and write them to a .env file.
+        
+        Args:
+            token: The virtual environment token.
+            path: Path to the .env file (default: ".env").
+            overwrite: If True, overwrite existing file. If False, append.
+            cache_ttl: Optional TTL in seconds to cache the environment.
+            
+        Returns:
+            A dictionary of environment variable names to their values.
+            
+        Raises:
+            EnvError: If the environment variables cannot be retrieved.
+            AuthenticationError: If the token is invalid.
+            
+        Example:
+            >>> async with AsyncClient() as client:
+            ...     await client.export_env("TOKEN", path=".env")
+        """
+        secrets = await self.get_env(token, cache_ttl=cache_ttl)
+        
+        mode = "w" if overwrite else "a"
+        with open(path, mode) as f:
+            if not overwrite:
+                f.write("\n")  # Add newline before appending
+            for key, value in secrets.items():
+                # Escape special characters in value
+                escaped_value = value.replace("\\", "\\\\").replace('"', '\\"')
+                f.write(f'{key}="{escaped_value}"\n')
+        
+        return secrets
+    
+    async def embed(
+        self,
+        token: str,
+        texts: list,
+        model: str = "text-embedding-3-small",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Generate embeddings for the given texts through the proxy.
+        
+        Args:
+            token: The proxy authentication token.
+            texts: List of text strings to generate embeddings for.
+            model: The embedding model to use (default: text-embedding-3-small).
+            **kwargs: Additional parameters to pass to the API.
+            
+        Returns:
+            The embeddings response containing vector representations.
+            
+        Example:
+            >>> async with AsyncClient() as client:
+            ...     result = await client.embed("TOKEN", texts=["hello", "world"])
+            ...     embeddings = [item["embedding"] for item in result["data"]]
+        """
+        payload = {
+            "model": model,
+            "input": texts,
+            **kwargs
+        }
+        return await self.proxy("v1/embeddings", token, payload=payload)
+    
+    async def image(
+        self,
+        token: str,
+        prompt: str,
+        model: str = "dall-e-3",
+        n: int = 1,
+        size: str = "1024x1024",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Generate images from a text prompt through the proxy.
+        
+        Args:
+            token: The proxy authentication token.
+            prompt: Text description of the desired image.
+            model: The image generation model (default: dall-e-3).
+            n: Number of images to generate (default: 1).
+            size: Image size (default: 1024x1024).
+            **kwargs: Additional parameters to pass to the API.
+            
+        Returns:
+            The image generation response containing URLs or base64 data.
+            
+        Example:
+            >>> async with AsyncClient() as client:
+            ...     result = await client.image("TOKEN", prompt="A cat on the moon")
+            ...     image_url = result["data"][0]["url"]
+        """
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "n": n,
+            "size": size,
+            **kwargs
+        }
+        return await self.proxy("v1/images/generations", token, payload=payload)
+    
+    async def health(self) -> bool:
+        """
+        Check if the Double-O service is available.
+        
+        Returns:
+            True if the service is healthy and reachable.
+            
+        Raises:
+            ProxyError: If the service is unreachable or unhealthy.
+            
+        Example:
+            >>> async with AsyncClient() as client:
+            ...     if await client.health():
+            ...         print("Service is up!")
+        """
+        url = f"{self.base_url}/health"
+        
+        try:
+            response = await self._request_with_retry(
+                "GET",
+                url,
+            )
+            response.raise_for_status()
+            return True
+        except aiohttp.ClientError as e:
+            raise ProxyError(f"Health check failed: {e}") from e
     
     async def close(self) -> None:
         """Close the underlying aiohttp session."""

@@ -64,6 +64,12 @@ result = oo.chat(
 print(result)
 ```
 
+## Links
+
+- **PyPI**: https://pypi.org/project/double-o/
+- **Website**: https://oovault.nl/
+- **Docs**: https://oovault.nl/docs
+
 ## Features
 
 ### Secret Caching with TTL

@@ -212,9 +212,18 @@ class Client:
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=self.timeout
             )
+
+            if response.status_code == 401:
+                try:
+                    data = response.json()
+                    reauth_url = data.get("reauth_url")
+                except Exception:
+                    reauth_url = None
+                raise AuthenticationError("Invalid token", reauth_url=reauth_url)
+
             response.raise_for_status()
             data = response.json()
-            
+
             if "value" in data:
                 value = data["value"]
                 # Cache the value if TTL is specified
@@ -228,7 +237,9 @@ class Client:
                 raise SecretError(error_msg)
             else:
                 raise SecretError("Unknown error: no value returned")
-                
+
+        except AuthenticationError:
+            raise
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 401:
                 raise AuthenticationError("Invalid token") from e
@@ -291,9 +302,20 @@ class Client:
                 data=json.dumps(payload) if payload else None,
                 timeout=self.timeout
             )
+
+            if response.status_code == 401:
+                try:
+                    data = response.json()
+                    reauth_url = data.get("reauth_url")
+                except Exception:
+                    reauth_url = None
+                raise AuthenticationError("Invalid proxy token", reauth_url=reauth_url)
+
             response.raise_for_status()
             return response.json()
-            
+
+        except AuthenticationError:
+            raise
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 401:
                 raise AuthenticationError("Invalid proxy token") from e
@@ -359,9 +381,18 @@ class Client:
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=self.timeout
             )
+
+            if response.status_code == 401:
+                try:
+                    data = response.json()
+                    reauth_url = data.get("reauth_url")
+                except Exception:
+                    reauth_url = None
+                raise AuthenticationError("Invalid token", reauth_url=reauth_url)
+
             response.raise_for_status()
             data = response.json()
-            
+
             if "secrets" in data:
                 secrets = data["secrets"]
                 if cache_ttl is not None:
@@ -374,7 +405,9 @@ class Client:
                 raise EnvError(error_msg)
             else:
                 raise EnvError("Unknown error: no secrets returned")
-                
+
+        except AuthenticationError:
+            raise
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 401:
                 raise AuthenticationError("Invalid token") from e

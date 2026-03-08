@@ -248,13 +248,18 @@ class AsyncClient:
                 url,
                 headers={"Authorization": f"Bearer {token}"},
             )
-            
+
             if response.status == 401:
-                raise AuthenticationError("Invalid token")
-            
+                try:
+                    data = await response.json()
+                    reauth_url = data.get("reauth_url")
+                except Exception:
+                    reauth_url = None
+                raise AuthenticationError("Invalid token", reauth_url=reauth_url)
+
             response.raise_for_status()
             data = await response.json()
-            
+
             if "value" in data:
                 value = data["value"]
                 # Cache the value if TTL is specified
@@ -268,7 +273,9 @@ class AsyncClient:
                 raise SecretError(error_msg)
             else:
                 raise SecretError("Unknown error: no value returned")
-                
+
+        except AuthenticationError:
+            raise
         except aiohttp.ClientResponseError as e:
             if e.status == 401:
                 raise AuthenticationError("Invalid token") from e
@@ -330,13 +337,20 @@ class AsyncClient:
                 headers=request_headers,
                 data=json.dumps(payload) if payload else None,
             )
-            
+
             if response.status == 401:
-                raise AuthenticationError("Invalid proxy token")
-            
+                try:
+                    data = await response.json()
+                    reauth_url = data.get("reauth_url")
+                except Exception:
+                    reauth_url = None
+                raise AuthenticationError("Invalid proxy token", reauth_url=reauth_url)
+
             response.raise_for_status()
             return await response.json()
-            
+
+        except AuthenticationError:
+            raise
         except aiohttp.ClientResponseError as e:
             if e.status == 401:
                 raise AuthenticationError("Invalid proxy token") from e
@@ -405,13 +419,18 @@ class AsyncClient:
                 url,
                 headers={"Authorization": f"Bearer {token}"},
             )
-            
+
             if response.status == 401:
-                raise AuthenticationError("Invalid token")
-            
+                try:
+                    data = await response.json()
+                    reauth_url = data.get("reauth_url")
+                except Exception:
+                    reauth_url = None
+                raise AuthenticationError("Invalid token", reauth_url=reauth_url)
+
             response.raise_for_status()
             data = await response.json()
-            
+
             if "secrets" in data:
                 secrets = data["secrets"]
                 if cache_ttl is not None:
@@ -424,7 +443,9 @@ class AsyncClient:
                 raise EnvError(error_msg)
             else:
                 raise EnvError("Unknown error: no secrets returned")
-                
+
+        except AuthenticationError:
+            raise
         except aiohttp.ClientResponseError as e:
             if e.status == 401:
                 raise AuthenticationError("Invalid token") from e

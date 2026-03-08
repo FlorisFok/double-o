@@ -18,7 +18,10 @@ class ProxyError(DoubleOError):
 
 class AuthenticationError(DoubleOError):
     """Exception raised when authentication fails."""
-    pass
+
+    def __init__(self, message: str = "Authentication failed", reauth_url: str = None):
+        super().__init__(message)
+        self.reauth_url = reauth_url
 
 
 class EnvError(DoubleOError):
